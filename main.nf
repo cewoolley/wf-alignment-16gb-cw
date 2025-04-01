@@ -21,7 +21,7 @@ process makeMMIndex {
     cpus params.threads
     memory {
         def ref_size = combined_refs.size()
-        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "24 GB" : "11 GB" //try 24gb
     }
     input:
         path combined_refs, stageAs: "combined_refs.fasta"
