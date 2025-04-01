@@ -21,7 +21,7 @@ process makeMMIndex {
     cpus params.threads
     memory {
         def ref_size = combined_refs.size()
-        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
     }
     input:
         path combined_refs, stageAs: "combined_refs.fasta"
@@ -40,7 +40,7 @@ process checkReferences {
     cpus params.threads
     memory {
         def ref_size = combined_refs.size()
-        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
     }
     input:
         path "combined_references.mmi"
@@ -59,7 +59,7 @@ process alignReads {
     label "wfalignment"
     cpus params.threads
     memory {
-        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
     }
     input:
         tuple val(meta), path(input)
@@ -342,4 +342,142 @@ workflow pipeline {
                     it.collectEntries { alias, depth, locus -> [alias, [locus, depth]] }
                 }
                 // combine the map with the list of sample names (as these are in the right
-                // order); we use `cross` with an empty closure here because `
+                // order); we use `cross` with an empty closure here because `combine`
+                // flattens its input channels
+                | cross(sample_names) { }
+                | map { per_sample_max_depth_loci, sample_names ->
+                    for (sample in sample_names) {
+                        (locus, depth) = per_sample_max_depth_loci[sample] ?: [null, null]
+                        if (depth > params.wf.igv_locus_depth_threshold) {
+                            return locus
+                        }
+                    }
+                }
+                | ifEmpty(null)
+            }
+        }
+
+        report = makeReport(
+            // collect files for report in directories (one dir per sample)
+            files_for_report
+            | map {
+                meta = it[0]
+                files = it[1..-1].flatten()
+                [meta.alias, files]
+            }
+            | collectFilesInDir
+            | collect,
+            refs.names_per_ref_file.collect(),
+            counts,
+            software_versions,
+            workflow_params,
+        )
+        if (params.igv) {
+            // create IGV config file
+            igv_conf = configure_igv(
+                Channel.empty()
+                | concat(
+                    refs.combined.name,
+                    refs.combined_index.name,
+                    sample_names | map { list -> list.collect {
+                        [ "${it}.sorted.aligned.bam", "${it}.sorted.aligned.bam.bai" ]
+                    } }
+                )
+                | flatten
+                | collectFile(newLine: true, sort: false),
+                igv_locus,
+                [displayMode: "SQUISHED", colorBy: "strand"],
+                Channel.of(null),
+            )
+        }
+
+    emit:
+        bam
+        histograms = stats.hists
+        flagstat = stats.flagstat
+        readstats = stats.readstats
+}
+
+
+// See https://github.com/nextflow-io/nextflow/issues/1636
+// This is the only way to publish files from a workflow whilst
+// decoupling the publish from the process steps.
+process publish {
+    label "wfalignment"
+    cpus 1
+    memory "2 GB"
+    // publish inputs to output directory
+    publishDir "${params.out_dir}", mode: 'copy', pattern: "*", saveAs: {
+        // publish with `fname` as filename (unless it's `null`; then just use the
+        // current filename)
+        fname = fname ?: f.name
+        params.prefix ? "${params.prefix}-${fname}" : "${fname}"
+    }
+    input:
+        tuple path(f), val(fname)
+    output:
+        path f
+    """
+    echo "Writing output files"
+    """
+}
+
+
+// entrypoint workflow
+WorkflowMain.initialise(workflow, params, log)
+workflow {
+    Pinguscript.ping_start(nextflow, workflow, params)
+
+    Map ingress_args = [
+        "sample": params.sample,
+        "sample_sheet": params.sample_sheet,
+        "analyse_unclassified": params.analyse_unclassified,
+        "stats": false,
+    ]
+
+    // get input data
+    if (params.fastq) {
+        sample_data = fastq_ingress(ingress_args + ["input": params.fastq])
+    } else {
+        sample_data = xam_ingress(
+            ingress_args + ["input": params.bam, "keep_unaligned": true]
+        )
+    }
+
+    counts = file(params.counts ?: OPTIONAL_FILE, checkIfExists: true)
+
+    // Run pipeline
+    results = pipeline(
+        sample_data, params.references, counts, params.depth_coverage
+    )
+
+    // publish results files
+    Channel.empty()
+        | mix (
+        results.bam
+        | flatMap { meta, bam, bai -> [
+            [bam, "${meta.alias}.sorted.aligned.bam"],
+            [bai, "${meta.alias}.sorted.aligned.bam.bai"],
+        ]},
+        // flagstat and histograms should always be there
+        results.flagstat
+        | map { meta, flagstat -> [flagstat, "${meta.alias}.flagstat.tsv"] },
+        results.histograms
+        | flatMap { meta, hists ->
+            hists.collect { hist -> [hist, "${meta.alias}-histograms/$hist.name"] }
+        },
+        // also publish per-read stats if there are some
+        results.readstats
+        | map { meta, readstats ->
+            if (readstats) [readstats, "${meta.alias}.readstats.tsv.gz"]
+        },
+    )
+    | publish
+}
+
+workflow.onComplete {
+    Pinguscript.ping_complete(nextflow, workflow, params)
+}
+workflow.onError {
+    Pinguscript.ping_error(nextflow, workflow, params)
+}
