@@ -234,7 +234,7 @@
     "resources": {
         "recommended": {
             "cpus": 12,
-            "memory": "32GB"
+            "memory": "16GB"
         },
         "minimum": {
             "cpus": 6,
