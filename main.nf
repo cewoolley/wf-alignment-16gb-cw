@@ -21,7 +21,7 @@ process makeMMIndex {
     cpus params.threads
     memory {
         def ref_size = combined_refs.size()
-        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
     }
     input:
         path combined_refs, stageAs: "combined_refs.fasta"
@@ -40,7 +40,7 @@ process checkReferences {
     cpus params.threads
     memory {
         def ref_size = combined_refs.size()
-        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
     }
     input:
         path "combined_references.mmi"
@@ -59,7 +59,7 @@ process alignReads {
     label "wfalignment"
     cpus params.threads
     memory {
-        combined_refs.size() > 1e9 ? "31 GB" : "11 GB"
+        combined_refs.size() > 1e9 ? "16 GB" : "11 GB"
     }
     input:
         tuple val(meta), path(input)
